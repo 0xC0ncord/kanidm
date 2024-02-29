@@ -16,7 +16,49 @@ const GID_SYSTEM_NUMBER_MIN: u32 = 65536;
 /// This is the normal system range, we MUST NOT allow it to be allocated.
 const GID_SAFETY_NUMBER_MIN: u32 = 1000;
 
+/// This is the range systemd considers to belong to containers and are treated
+/// as system users.
+const GID_SYSTEMD_CONTAINER_MIN: u32 = 524288;
+const GID_SYSTEMD_CONTAINER_MAX: u32 = 1879048191;
+
+/// This range is outside of the signed 32-bit UID range, which some legacy
+/// programs may have trouble with. systemd recommends not using it.
+const GID_DRAGONS_MIN: u32 = 2147483648;
+const GID_DRAGONS_MAX: u32 = 4294967294;
+
+/// Reserved for use by setresuid(), chown(), and others.
+const GID_U32_MAX: u32 = 4294967295;
+
 pub struct GidNumber {}
+
+fn validate_gidnumber(gid: u32) {
+    if gid < GID_SYSTEM_NUMBER_MIN {
+        return Err(OperationError::InvalidAttribute(format!(
+            "gidnumber {gid} may overlap with system range {GID_SYSTEM_NUMBER_MIN}"
+        )));
+    }
+    if gid <= GID_SAFETY_NUMBER_MIN {
+        return Err(OperationError::InvalidAttribute(format!(
+            "gidnumber {gid} overlaps into system secure range {GID_SAFETY_NUMBER_MIN}"
+        )));
+    }
+    if GID_SYSTEMD_CONTAINER_MIN <= gid and gid <= GID_SYSTEMD_CONTAINER_MAX {
+        return Err(OperationError::InvalidAttribute(format!(
+            "gidnumber {gid} overlaps into systemd container range {GID_SYSTEMD_CONTAINER_MIN}-{GID_SYSTEMD_CONTAINER_MAX}"
+        )));
+    }
+    if GID_DRAGONS_MIN <= gid and gid <= GID_DRAGONS_MAX {
+        return Err(OperationError::InvalidAttribute(format!(
+            "gidnumber {gid} overlaps into potentially dangerous range {GID_DRAGONS_MIN}-{GID_DRAGONS_MAX}"
+        )));
+    }
+    if gid == GID_U32_MAX {
+        return Err(OperationError::InvalidAttribute(format!(
+            "gidnumber {gid} cannot be 2^32 - 1 {GID_U32_MAX}"
+        )));
+    }
+    Ok(())
+}
 
 fn apply_gidnumber<T: Clone>(e: &mut Entry<EntryInvalid, T>) -> Result<(), OperationError> {
     if (e.attribute_equality("class", &PVCLASS_POSIXGROUP)
@@ -32,11 +74,9 @@ fn apply_gidnumber<T: Clone>(e: &mut Entry<EntryInvalid, T>) -> Result<(), Opera
             })?;
 
         let gid = uuid_to_gid_u32(u_ref);
-        // assert the value is greater than the system range.
-        if gid < GID_SYSTEM_NUMBER_MIN {
-            return Err(OperationError::InvalidAttribute(format!(
-                "gidnumber {gid} may overlap with system range {GID_SYSTEM_NUMBER_MIN}"
-            )));
+        // Assert the value is in a safe range.
+        if let Err(invalid) = validate_gidnumber(gid) {
+            return Err(invalid);
         }
 
         let gid_v = Value::new_uint32(gid);
@@ -45,10 +85,8 @@ fn apply_gidnumber<T: Clone>(e: &mut Entry<EntryInvalid, T>) -> Result<(), Opera
         Ok(())
     } else if let Some(gid) = e.get_ava_single_uint32("gidnumber") {
         // If they provided us with a gid number, ensure it's in a safe range.
-        if gid <= GID_SAFETY_NUMBER_MIN {
-            Err(OperationError::InvalidAttribute(format!(
-                "gidnumber {gid} overlaps into system secure range {GID_SAFETY_NUMBER_MIN}"
-            )))
+        if let Err(invalid) = validate_gidnumber(gid) {
+            return Err(invalid);
         } else {
             Ok(())
         }
